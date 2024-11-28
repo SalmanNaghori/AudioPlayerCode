@@ -1,0 +1,366 @@
+import 'dart:async';
+
+import 'package:assets_audio_player/assets_audio_player.dart';
+import 'package:community_app/core/basic_features.dart';
+import 'package:community_app/core/utils/logger_util.dart';
+import 'package:community_app/core/widgets/network_image.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
+
+class DuaAudioPlayerScreen extends StatefulWidget {
+  final String audioUrl;
+  final String title;
+  final String thumbNail;
+  const DuaAudioPlayerScreen({
+    Key? key,
+    required this.audioUrl,
+    required this.title,
+    required this.thumbNail,
+  }) : super(key: key);
+
+  @override
+  State<DuaAudioPlayerScreen> createState() => _DuaAudioPlayerScreenState();
+}
+
+class _DuaAudioPlayerScreenState extends State<DuaAudioPlayerScreen> {
+  // ValueNotifier
+  final ValueNotifier<bool> isLoading = ValueNotifier(true);
+  final ValueNotifier<bool> isPlay = ValueNotifier(false);
+  final ValueNotifier<Duration> position = ValueNotifier(Duration.zero);
+  final ValueNotifier<Duration> duration = ValueNotifier(Duration.zero);
+  final ValueNotifier<Duration> currentDuration = ValueNotifier(Duration.zero);
+
+  // Package
+  final AssetsAudioPlayer assetsAudioPlayer = AssetsAudioPlayer();
+
+  // Variable
+  Duration currentValue = Duration.zero;
+
+  // Stream
+  late StreamSubscription<Duration> positionSubscription;
+  late StreamSubscription<PlayerState> playerStateSubscription;
+  late StreamSubscription<Playing> finishedStateSubscription;
+
+  String formatDuration(Duration d) {
+    final minutes = d.inMinutes.remainder(60);
+    final seconds = d.inSeconds.remainder(60);
+    final hours = d.inHours.remainder(60);
+    return checkTheAudioTime(minutes, seconds, hours);
+  }
+
+  void handlePlayPause() {
+    if (assetsAudioPlayer.isPlaying.value) {
+      assetsAudioPlayer.pause();
+    } else {
+      assetsAudioPlayer.play();
+    }
+    isPlay.value = !isPlay.value;
+  }
+
+  void handleSeek(double second) {
+    if (assetsAudioPlayer.isPlaying.value) {
+      if (mounted) {
+        assetsAudioPlayer.pause();
+        Duration newDuration = Duration(seconds: second.toInt());
+        position.value = newDuration;
+        calculateCurrentPosition(position.value);
+
+        assetsAudioPlayer.seek(newDuration).then((value) {
+          Future.delayed(const Duration(milliseconds: 1500), () {
+            if (mounted) assetsAudioPlayer.play();
+          });
+        });
+      }
+    } else {
+      Duration newDuration = Duration(seconds: second.toInt());
+      position.value = newDuration;
+      calculateCurrentPosition(position.value);
+      assetsAudioPlayer.seek(newDuration);
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    setAudioOrListenValue();
+  }
+
+  Future<bool> _willPopCallback() async {
+    Navigator.pop(context);
+    return Future.value(true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: CustomAppBar.backActionAppBar(
+        title: AppString.audio,
+        blackBackground: true,
+        useBackIcon: true,
+        backPress: () {
+          _willPopCallback();
+        },
+      ),
+      body: Padding(
+        padding: EdgeInsets.all(Dimensions.commonPaddingForScreen),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            MyRoundCornerContainerNetworkImage(
+                height: Dimensions.screenHeight() * 0.40, width: double.infinity, image: widget.thumbNail),
+            SizedBox(
+              height: Dimensions.h10,
+            ),
+            Text(
+              widget.title,
+              style: fontStyleBold18,
+            ),
+            ValueListenableBuilder<Duration>(
+              valueListenable: duration,
+              builder: (context, durationValue, child) {
+                return ValueListenableBuilder<Duration>(
+                  valueListenable: position,
+                  builder: (context, positionValue, child) {
+                    final double maxDuration = durationValue.inSeconds.toDouble();
+                    final double currentPosition = positionValue.inSeconds.toDouble();
+                    return Column(
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Transform.scale(
+                                scale: 1.1,
+                                child: Slider(
+                                  thumbColor: ColorConst.primaryColor,
+                                  activeColor: ColorConst.primaryColorWithOpacity,
+                                  inactiveColor: ColorConst.primaryColor.withOpacity(0.1),
+                                  min: 0.0,
+                                  max: maxDuration > 0 ? maxDuration : 1.0,
+                                  value: currentPosition <= maxDuration ? currentPosition : 0.0,
+                                  onChanged: (value) {
+                                    if (maxDuration > 0) {
+                                      logger.i(value);
+                                      handleSeek(value);
+                                    }
+                                  },
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              formatDuration(position.value),
+                              style: fontStyleMedium16.copyWith(color: ColorConst.primaryColor),
+                            ),
+                            Text(
+                              formatDuration(duration.value),
+                              style: fontStyleMedium16.copyWith(color: ColorConst.primaryColor),
+                            ),
+                          ],
+                        ),
+                        SizedBox(
+                          height: Dimensions.h5,
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                GestureDetector(
+                                  onTap: handleRewind,
+                                  child: Icon(
+                                    Icons.replay_10,
+                                    color: position.value >= const Duration(seconds: 10)
+                                        ? ColorConst.primaryColor
+                                        : ColorConst.primaryColorWithOpacity,
+                                    size: Dimensions.w55,
+                                  ),
+                                ),
+                                SizedBox(
+                                  height: Dimensions.h70,
+                                  width: Dimensions.h70,
+                                  child: progressIndicatorOrButton(),
+                                ),
+                                ValueListenableBuilder<Duration>(
+                                    valueListenable: currentDuration,
+                                    builder: (context, currentValue, child) {
+                                      return GestureDetector(
+                                        onTap: handleForward,
+                                        child: Icon(
+                                          Icons.forward_10,
+                                          size: Dimensions.w55,
+                                          color: currentDuration.value >= const Duration(seconds: 10)
+                                              ? ColorConst.primaryColor
+                                              : ColorConst.primaryColorWithOpacity,
+                                        ),
+                                      );
+                                    }),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ],
+                    );
+                  },
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  ValueListenableBuilder<bool> progressIndicatorOrButton() {
+    return ValueListenableBuilder<bool>(
+        valueListenable: isLoading,
+        builder: (context, isLoadingValue, child) {
+          return isLoadingValue
+              ? CupertinoActivityIndicator(
+                  radius: Dimensions.r15,
+                )
+              : GestureDetector(
+                  onTap: handlePlayPause,
+                  child: playPauseButton(),
+                );
+        });
+  }
+
+  ValueListenableBuilder<bool> playPauseButton() {
+    return ValueListenableBuilder<bool>(
+        valueListenable: isPlay,
+        builder: (context, isPlay, child) {
+          return Icon(
+            isPlay ? Icons.pause_circle_outline : Icons.play_circle_outline,
+            color: ColorConst.primaryColor,
+            size: Dimensions.w55,
+          );
+        });
+  }
+
+  void handleRewind() {
+    if (position.value >= const Duration(seconds: 10)) {
+      final newPosition = position.value - const Duration(seconds: 10);
+      assetsAudioPlayer.seek(newPosition);
+      currentDuration.value = duration.value;
+    } else {
+      logger.e("currentDuration.value is 0 seconds");
+    }
+  }
+
+  void handleForward() {
+    if (currentDuration.value >= const Duration(seconds: 10)) {
+      final newPosition = position.value + const Duration(seconds: 10);
+      currentValue = newPosition;
+      assetsAudioPlayer.seek(newPosition);
+      calculateCurrentPosition(currentValue);
+    } else {
+      logger.e("currentDuration.value is less than 10 seconds");
+    }
+  }
+
+  @override
+  void dispose() {
+    disposeDataMembers();
+    super.dispose();
+  }
+
+  void setAudioOrListenValue() async {
+    try {
+      assetsAudioPlayer.setVolume(1.0);
+      final audio = Audio.network(
+        widget.audioUrl,
+        metas: Metas(
+          title: widget.title,
+          artist: "",
+          album: widget.title,
+          image: MetasImage.network(widget.thumbNail), // Thumbnail image
+        ),
+      );
+
+      await assetsAudioPlayer.open(
+        audio,
+        showNotification: true,
+        autoStart: false,
+        notificationSettings: NotificationSettings(
+          customPrevAction: (assetsAudioPlayer) {
+            handleRewind();
+          },
+          customNextAction: (assetsAudioPlayer) {
+            handleForward();
+          },
+        ),
+      );
+
+      playerStateSubscription = assetsAudioPlayer.playerState.listen((event) async {
+        if (event == PlayerState.pause || event == PlayerState.stop) {
+          logger.i("Inside complete");
+          isPlay.value = false;
+        } else if (event == PlayerState.play) {
+          logger.i("isPlaying");
+          isPlay.value = true;
+        }
+      });
+
+      positionSubscription = assetsAudioPlayer.currentPosition.listen((p) {
+        position.value = p;
+      });
+
+      finishedStateSubscription = assetsAudioPlayer.playlistAudioFinished.listen((Playing playing) {
+        logger.i("Current playing audio has finished: $playing");
+        isPlay.value = true;
+        position.value = Duration.zero;
+        assetsAudioPlayer.seek(Duration.zero);
+        assetsAudioPlayer.stop();
+      });
+
+      // Listen to the current playing audio
+      assetsAudioPlayer.current.listen((playingAudio) {
+        if (playingAudio != null && mounted) {
+          final asset = playingAudio.audio.assetAudioPath;
+          final songDuration = playingAudio.audio.duration;
+          logger.i("Currently playing: $asset");
+          logger.i("Total duration: ${formatDuration(songDuration)}");
+
+          // Update duration and current position
+          duration.value = songDuration;
+          currentDuration.value = duration.value - position.value;
+          isLoading.value = false;
+        }
+      });
+    } catch (e) {
+      logger.e("===Error===${e.toString()}");
+      isLoading.value = false;
+    }
+  }
+
+  void calculateCurrentPosition(Duration position) {
+    currentValue = position;
+    currentDuration.value = duration.value - currentValue;
+  }
+
+  void disposeDataMembers() {
+    assetsAudioPlayer.dispose();
+    isLoading.dispose();
+    position.dispose();
+    duration.dispose();
+    currentDuration.dispose();
+    finishedStateSubscription.cancel();
+    positionSubscription.cancel();
+
+    playerStateSubscription.cancel();
+  }
+
+  String checkTheAudioTime(int minutes, int seconds, int hours) {
+    if (hours > 0) {
+      return "${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}";
+    } else {
+      return "${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}";
+    }
+  }
+}
